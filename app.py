@@ -21,6 +21,8 @@ st.set_page_config(
 # ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a composite of three elite institutional equity analysts operating under the Institutional Quality Compounding Protocol. You must evaluate the provided stock data and return ONLY valid JSON. No markdown, no explanation outside the JSON.
 
+CRITICAL INSTRUCTION: The data provided includes a "PRE-EXTRACTED KEY METRICS" section at the bottom. You MUST copy those exact values into the keyMetrics fields of your JSON response. Do NOT recalculate or return N/A if a value is provided there.
+
 ANALYST 1 — FUNDAMENTAL ANALYST (Quantitative Framework):
 Evaluate: ROIC (TTM & 5Y avg, target >15%), Operating Margin (stability, CV), Gross Profitability (Novy-Marx), FCF Conversion (target >100%), D/E Ratio (target <0.5x), Interest Coverage (target >10x), Beneish M-Score (flag if >-1.78), Altman Z-Score (safe >3.0), Piotroski F-Score (strong 8-9), Cash Conversion Cycle, Revenue Growth (5Y CAGR target >10%), ROIIC vs WACC.
 Weight: Capital Efficiency 45%, Operational Health 30%, Cash & Solvency 15%, Growth & Integrity 10%.
@@ -59,20 +61,20 @@ You MUST respond with ONLY this JSON structure:
   "recommendation": "STRONG BUY|BUY|HOLD|SELL",
   "memo": "A single paragraph investment memo (3-5 sentences) citing specific metrics from the framework. Reference ROIC, moat type, FCF conversion, margin of safety, forward valuation multiples, and any forensic flags. Be precise and data-driven.",
   "keyMetrics": {
-    "roicTTM": "<value or N/A>",
-    "operatingMargin": "<value or N/A>",
-    "fcfConversion": "<value or N/A>",
-    "debtToEquity": "<value or N/A>",
-    "mScore": "<value or N/A>",
-    "zScore": "<value or N/A>",
-    "fScore": "<value or N/A>",
-    "moatType": "<primary moat type>",
-    "forwardPE": "<value or N/A>",
-    "forwardPEG": "<value or N/A>",
-    "forwardEVSales": "<value or N/A>",
-    "forwardEVFCF": "<value or N/A>",
-    "dcfIntrinsicValue": "<value or N/A>",
-    "marginOfSafety": "<percentage or N/A>"
+    "roicTTM": "COPY the roicTTM value from PRE-EXTRACTED KEY METRICS section",
+    "operatingMargin": "COPY the operatingMargin value from PRE-EXTRACTED KEY METRICS section",
+    "fcfConversion": "COPY the fcfConversion value from PRE-EXTRACTED KEY METRICS section",
+    "debtToEquity": "COPY the debtToEquity value from PRE-EXTRACTED KEY METRICS section",
+    "mScore": "COPY the mScore value or N/A",
+    "zScore": "COPY the zScore value from PRE-EXTRACTED KEY METRICS section",
+    "fScore": "COPY the fScore value from PRE-EXTRACTED KEY METRICS section",
+    "moatType": "<primary moat type you identify>",
+    "forwardPE": "COPY the forwardPE value from PRE-EXTRACTED KEY METRICS section",
+    "forwardPEG": "COPY the forwardPEG value from PRE-EXTRACTED KEY METRICS section",
+    "forwardEVSales": "COPY the forwardEVSales value from PRE-EXTRACTED KEY METRICS section",
+    "forwardEVFCF": "COPY the forwardEVFCF value from PRE-EXTRACTED KEY METRICS section",
+    "dcfIntrinsicValue": "COPY the dcfIntrinsicValue value from PRE-EXTRACTED KEY METRICS section",
+    "marginOfSafety": "COPY the marginOfSafety value from PRE-EXTRACTED KEY METRICS section"
   },
   "analystNotes": {
     "fundamental": "One sentence summary of fundamental findings.",
@@ -668,6 +670,154 @@ def format_fmp_for_analysis(ticker, data):
         except Exception:
             pass
 
+    # ══════════════════════════════════════════════════════════════
+    #  PRE-EXTRACTED KEY METRICS SUMMARY
+    #  Claude MUST use these values directly in keyMetrics JSON output.
+    # ══════════════════════════════════════════════════════════════
+    lines.append(f"\n{'='*60}")
+    lines.append(f"=== PRE-EXTRACTED KEY METRICS (USE THESE EXACT VALUES) ===")
+    lines.append(f"{'='*60}")
+
+    ratios_ttm = data.get("ratios_ttm", [None])[0] if data.get("ratios_ttm") else None
+    km_ttm = data.get("key_metrics_ttm", [None])[0] if data.get("key_metrics_ttm") else None
+    dcf = data.get("dcf", [None])[0] if data.get("dcf") else None
+    profile_data = data.get("profile", [None])[0] if data.get("profile") else None
+    cashflow_data = data.get("cashflow") or []
+    income_data = data.get("income") or []
+    ev_data = data.get("ev") or []
+    estimates = data.get("analyst_estimates") or []
+    score_raw = data.get("score")
+
+    # 1. ROIC TTM
+    roic = "N/A"
+    if ratios_ttm:
+        v = ratios_ttm.get("returnOnCapitalEmployedTTM")
+        if v is not None:
+            roic = f"{float(v)*100:.1f}%"
+    lines.append(f"roicTTM: {roic}")
+
+    # 2. Operating Margin
+    opmarg = "N/A"
+    if ratios_ttm:
+        v = ratios_ttm.get("operatingProfitMarginTTM")
+        if v is not None:
+            opmarg = f"{float(v)*100:.1f}%"
+    lines.append(f"operatingMargin: {opmarg}")
+
+    # 3. FCF Conversion (FCF / Net Income)
+    fcf_conv = "N/A"
+    if cashflow_data and income_data:
+        try:
+            fcf = cashflow_data[0].get('freeCashFlow', 0)
+            ni = income_data[0].get('netIncome', 0)
+            if ni and ni != 0 and fcf:
+                fcf_conv = f"{float(fcf)/float(ni):.2f}x"
+        except Exception:
+            pass
+    lines.append(f"fcfConversion: {fcf_conv}")
+
+    # 4. D/E Ratio
+    de = "N/A"
+    if ratios_ttm:
+        v = ratios_ttm.get("debtEquityRatioTTM")
+        if v is not None:
+            de = f"{float(v):.2f}"
+    lines.append(f"debtToEquity: {de}")
+
+    # 5. Beneish M-Score (not available from FMP, note this)
+    lines.append(f"mScore: Not available from FMP data feed")
+
+    # 6. Altman Z-Score
+    z_score = "N/A"
+    if score_raw:
+        sd = score_raw[0] if isinstance(score_raw, list) else score_raw
+        v = sd.get("altmanZScore") or sd.get("altmanZScoreTTM")
+        if v is not None:
+            z_score = f"{float(v):.2f}"
+    lines.append(f"zScore: {z_score}")
+
+    # 7. Piotroski F-Score
+    f_score = "N/A"
+    if score_raw:
+        sd = score_raw[0] if isinstance(score_raw, list) else score_raw
+        v = sd.get("piotroskiScore") or sd.get("piotroskiScoreTTM")
+        if v is not None:
+            f_score = str(int(float(v)))
+    lines.append(f"fScore: {f_score}")
+
+    # 8-11. Forward Valuation Metrics
+    current_price = profile_data.get("price") if profile_data else None
+    current_ev_val = ev_data[0].get("enterpriseValue") if ev_data else None
+    fwd_eps = estimates[0].get("estimatedEpsAvg") if estimates else None
+    fwd_rev = estimates[0].get("estimatedRevenueAvg") if estimates else None
+    fwd_ebitda = estimates[0].get("estimatedEbitdaAvg") if estimates else None
+
+    # Forward P/E
+    fwd_pe_str = "N/A"
+    fwd_pe_val = None
+    try:
+        if current_price and fwd_eps and float(fwd_eps) > 0:
+            fwd_pe_val = float(current_price) / float(fwd_eps)
+            fwd_pe_str = f"{fwd_pe_val:.1f}x"
+    except Exception:
+        pass
+    lines.append(f"forwardPE: {fwd_pe_str}")
+
+    # Forward PEG (Revenue-based)
+    fwd_peg_str = "N/A"
+    try:
+        if fwd_pe_val and income_data and fwd_rev and float(fwd_rev) > 0:
+            last_rev = income_data[0].get('revenue', 0)
+            if last_rev and float(last_rev) > 0:
+                rev_growth = (float(fwd_rev) - float(last_rev)) / float(last_rev)
+                if rev_growth > 0:
+                    fwd_peg = fwd_pe_val / (rev_growth * 100)
+                    fwd_peg_str = f"{fwd_peg:.2f}x"
+    except Exception:
+        pass
+    lines.append(f"forwardPEG: {fwd_peg_str}")
+
+    # Forward EV/Sales
+    fwd_evs_str = "N/A"
+    try:
+        if current_ev_val and fwd_rev and float(fwd_rev) > 0:
+            fwd_evs = float(current_ev_val) / float(fwd_rev)
+            fwd_evs_str = f"{fwd_evs:.2f}x"
+    except Exception:
+        pass
+    lines.append(f"forwardEVSales: {fwd_evs_str}")
+
+    # Forward EV/FCF
+    fwd_evfcf_str = "N/A"
+    try:
+        if current_ev_val and fwd_ebitda and float(fwd_ebitda) > 0 and cashflow_data and income_data:
+            hist_fcf = cashflow_data[0].get('freeCashFlow', 0)
+            hist_ebitda = income_data[0].get('ebitda', 0) or income_data[0].get('operatingIncome', 0)
+            if hist_ebitda and float(hist_ebitda) > 0 and hist_fcf:
+                ratio = float(hist_fcf) / float(hist_ebitda)
+                est_fcf = float(fwd_ebitda) * ratio
+                if est_fcf > 0:
+                    fwd_evfcf = float(current_ev_val) / est_fcf
+                    fwd_evfcf_str = f"{fwd_evfcf:.1f}x"
+    except Exception:
+        pass
+    lines.append(f"forwardEVFCF: {fwd_evfcf_str}")
+
+    # 12-13. DCF & Margin of Safety
+    dcf_val_str = "N/A"
+    mos_str = "N/A"
+    if dcf:
+        dcf_v = dcf.get("dcf")
+        price_v = dcf.get("Stock Price") or (current_price if current_price else None)
+        if dcf_v is not None:
+            dcf_val_str = f"${float(dcf_v):.2f}"
+            if price_v and float(dcf_v) > 0:
+                mos = (float(dcf_v) - float(price_v)) / float(dcf_v)
+                mos_str = f"{mos*100:.1f}%"
+    lines.append(f"dcfIntrinsicValue: {dcf_val_str}")
+    lines.append(f"marginOfSafety: {mos_str}")
+    lines.append(f"{'='*60}")
+
     return "\n".join(lines)
 
 
@@ -675,7 +825,7 @@ def run_analysis(input_text):
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=1500,
+        max_tokens=2000,
         system=SYSTEM_PROMPT,
         messages=[{
             "role": "user",
