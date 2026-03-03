@@ -674,83 +674,206 @@ def format_fmp_for_analysis(ticker, data):
     #  PRE-EXTRACTED KEY METRICS SUMMARY
     #  Claude MUST use these values directly in keyMetrics JSON output.
     # ══════════════════════════════════════════════════════════════
+
+    def get_first(d, *keys):
+        """Try multiple key names on a dict, return first non-None value."""
+        if not d or not isinstance(d, dict):
+            return None
+        for k in keys:
+            v = d.get(k)
+            if v is not None:
+                return v
+        return None
+
+    def fmt_ratio(v):
+        """Format a ratio: if abs <2 treat as decimal (×100 for %), else already %."""
+        if v is None:
+            return "N/A"
+        try:
+            f = float(v)
+            if abs(f) < 2:
+                return f"{f*100:.1f}%"
+            return f"{f:.1f}%"
+        except Exception:
+            return str(v)
+
     lines.append(f"\n{'='*60}")
     lines.append(f"=== PRE-EXTRACTED KEY METRICS (USE THESE EXACT VALUES) ===")
     lines.append(f"{'='*60}")
 
-    ratios_ttm = data.get("ratios_ttm", [None])[0] if data.get("ratios_ttm") else None
+    r_ttm = data.get("ratios_ttm", [None])[0] if data.get("ratios_ttm") else None
     km_ttm = data.get("key_metrics_ttm", [None])[0] if data.get("key_metrics_ttm") else None
-    dcf = data.get("dcf", [None])[0] if data.get("dcf") else None
-    profile_data = data.get("profile", [None])[0] if data.get("profile") else None
-    cashflow_data = data.get("cashflow") or []
-    income_data = data.get("income") or []
-    ev_data = data.get("ev") or []
-    estimates = data.get("analyst_estimates") or []
-    score_raw = data.get("score")
+    dcf_d = data.get("dcf", [None])[0] if data.get("dcf") else None
+    prof = data.get("profile", [None])[0] if data.get("profile") else None
+    cf_list = data.get("cashflow") or []
+    inc_list = data.get("income") or []
+    bal_list = data.get("balance") or []
+    ev_list = data.get("ev") or []
+    est_list = data.get("analyst_estimates") or []
+    sc_raw = data.get("score")
 
-    # 1. ROIC TTM
-    roic = "N/A"
-    if ratios_ttm:
-        v = ratios_ttm.get("returnOnCapitalEmployedTTM")
-        if v is not None:
-            roic = f"{float(v)*100:.1f}%"
-    lines.append(f"roicTTM: {roic}")
+    # Extract first-record shortcuts
+    sc_d = None
+    if sc_raw:
+        sc_d = sc_raw[0] if isinstance(sc_raw, list) else sc_raw
+    est_d = est_list[0] if est_list else None
+    ev_d = ev_list[0] if ev_list else None
+    inc_d = inc_list[0] if inc_list else None
+    cf_d = cf_list[0] if cf_list else None
+    bal_d = bal_list[0] if bal_list else None
 
-    # 2. Operating Margin
-    opmarg = "N/A"
-    if ratios_ttm:
-        v = ratios_ttm.get("operatingProfitMarginTTM")
-        if v is not None:
-            opmarg = f"{float(v)*100:.1f}%"
-    lines.append(f"operatingMargin: {opmarg}")
+    # ── DEBUG: dump actual keys from critical endpoints ──
+    lines.append(f"\n[DEBUG_KEYS] ratios_ttm: {sorted(r_ttm.keys()) if r_ttm else 'NONE'}")
+    lines.append(f"[DEBUG_KEYS] key_metrics_ttm: {sorted(km_ttm.keys()) if km_ttm else 'NONE'}")
+    lines.append(f"[DEBUG_KEYS] score: {sorted(sc_d.keys()) if sc_d and isinstance(sc_d, dict) else 'NONE'}")
+    lines.append(f"[DEBUG_KEYS] analyst_estimates[0]: {sorted(est_d.keys()) if est_d else 'NONE'}")
+    lines.append(f"[DEBUG_KEYS] ev[0]: {sorted(ev_d.keys()) if ev_d else 'NONE'}")
+    lines.append(f"[DEBUG_KEYS] profile.price: {prof.get('price', 'MISSING') if prof else 'NONE'}")
 
-    # 3. FCF Conversion (FCF / Net Income)
-    fcf_conv = "N/A"
-    if cashflow_data and income_data:
+    # ── 1. ROIC TTM ──
+    roic_v = get_first(r_ttm,
+        "returnOnCapitalEmployedTTM", "returnOnCapitalEmployed",
+        "roicTTM", "roic", "returnOnInvestedCapitalTTM", "returnOnInvestedCapital")
+    if roic_v is None:
+        roic_v = get_first(km_ttm,
+            "roicTTM", "roic", "returnOnCapitalEmployedTTM", "returnOnCapitalEmployed")
+    # Fallback: compute ROIC = NOPAT / Invested Capital
+    if roic_v is None and inc_d and bal_d:
         try:
-            fcf = cashflow_data[0].get('freeCashFlow', 0)
-            ni = income_data[0].get('netIncome', 0)
-            if ni and ni != 0 and fcf:
-                fcf_conv = f"{float(fcf)/float(ni):.2f}x"
+            op_inc = float(get_first(inc_d, "operatingIncome") or 0)
+            nopat = op_inc * (1 - 0.21)
+            total_debt = float(get_first(bal_d, "totalDebt", "longTermDebt", "netDebt") or 0)
+            equity = float(get_first(bal_d, "totalStockholdersEquity", "totalEquity") or 0)
+            invested = total_debt + equity
+            if invested > 0:
+                roic_v = nopat / invested
+        except Exception:
+            pass
+    lines.append(f"roicTTM: {fmt_ratio(roic_v)}")
+
+    # ── 2. Operating Margin ──
+    opm_v = get_first(r_ttm,
+        "operatingProfitMarginTTM", "operatingProfitMargin",
+        "operatingMarginTTM", "operatingMargin")
+    if opm_v is None and inc_d:
+        try:
+            oi = float(get_first(inc_d, "operatingIncome") or 0)
+            rev = float(get_first(inc_d, "revenue") or 0)
+            if rev > 0:
+                opm_v = oi / rev
+        except Exception:
+            pass
+    lines.append(f"operatingMargin: {fmt_ratio(opm_v)}")
+
+    # ── 3. FCF Conversion (FCF / Net Income) ──
+    fcf_conv = "N/A"
+    if cf_d and inc_d:
+        try:
+            fcf = float(get_first(cf_d, "freeCashFlow", "fcf") or 0)
+            ni = float(get_first(inc_d, "netIncome") or 0)
+            if ni != 0 and fcf != 0:
+                fcf_conv = f"{fcf/ni:.2f}x"
         except Exception:
             pass
     lines.append(f"fcfConversion: {fcf_conv}")
 
-    # 4. D/E Ratio
-    de = "N/A"
-    if ratios_ttm:
-        v = ratios_ttm.get("debtEquityRatioTTM")
-        if v is not None:
-            de = f"{float(v):.2f}"
-    lines.append(f"debtToEquity: {de}")
+    # ── 4. D/E Ratio ──
+    de_v = get_first(r_ttm,
+        "debtEquityRatioTTM", "debtEquityRatio",
+        "debtToEquityTTM", "debtToEquity",
+        "totalDebtToEquityTTM", "totalDebtToEquity")
+    if de_v is None and bal_d:
+        try:
+            td = float(get_first(bal_d, "totalDebt", "longTermDebt") or 0)
+            te = float(get_first(bal_d, "totalStockholdersEquity", "totalEquity") or 0)
+            if te != 0:
+                de_v = td / te
+        except Exception:
+            pass
+    de_str = "N/A"
+    if de_v is not None:
+        try:
+            de_str = f"{float(de_v):.2f}"
+        except Exception:
+            de_str = str(de_v)
+    lines.append(f"debtToEquity: {de_str}")
 
-    # 5. Beneish M-Score (not available from FMP, note this)
-    lines.append(f"mScore: Not available from FMP data feed")
+    # ── 5. M-Score ──
+    lines.append(f"mScore: Not available from FMP")
 
-    # 6. Altman Z-Score
-    z_score = "N/A"
-    if score_raw:
-        sd = score_raw[0] if isinstance(score_raw, list) else score_raw
-        v = sd.get("altmanZScore") or sd.get("altmanZScoreTTM")
-        if v is not None:
-            z_score = f"{float(v):.2f}"
-    lines.append(f"zScore: {z_score}")
+    # ── 6. Altman Z-Score ──
+    z_val = None
+    if sc_d and isinstance(sc_d, dict):
+        z_val = get_first(sc_d, "altmanZScore", "altmanZScoreTTM", "zScore")
+    if z_val is None:
+        z_val = get_first(km_ttm, "altmanZScore", "altmanZScoreTTM", "zScore")
+    if z_val is None:
+        z_val = get_first(r_ttm, "altmanZScore", "altmanZScoreTTM")
+    # Fallback: compute Altman Z
+    if z_val is None and bal_d and inc_d and prof:
+        try:
+            ta = float(get_first(bal_d, "totalAssets") or 0)
+            if ta > 0:
+                wc = float(get_first(bal_d, "totalCurrentAssets") or 0) - float(get_first(bal_d, "totalCurrentLiabilities") or 0)
+                re = float(get_first(bal_d, "retainedEarnings") or 0)
+                ebit = float(get_first(inc_d, "operatingIncome", "ebitda") or 0)
+                tl = float(get_first(bal_d, "totalLiabilities") or 0)
+                rev = float(get_first(inc_d, "revenue") or 0)
+                mktcap = float(get_first(prof, "mktCap", "marketCap") or 0)
+                z_val = 1.2*(wc/ta) + 1.4*(re/ta) + 3.3*(ebit/ta) + (0.6*(mktcap/tl) if tl > 0 else 0) + 1.0*(rev/ta)
+        except Exception:
+            pass
+    z_str = f"{float(z_val):.2f}" if z_val is not None else "N/A"
+    lines.append(f"zScore: {z_str}")
 
-    # 7. Piotroski F-Score
-    f_score = "N/A"
-    if score_raw:
-        sd = score_raw[0] if isinstance(score_raw, list) else score_raw
-        v = sd.get("piotroskiScore") or sd.get("piotroskiScoreTTM")
-        if v is not None:
-            f_score = str(int(float(v)))
-    lines.append(f"fScore: {f_score}")
+    # ── 7. Piotroski F-Score ──
+    f_val = None
+    if sc_d and isinstance(sc_d, dict):
+        f_val = get_first(sc_d, "piotroskiScore", "piotroskiScoreTTM", "fScore")
+    if f_val is None:
+        f_val = get_first(km_ttm, "piotroskiScore", "piotroskiScoreTTM")
+    # Fallback: compute simplified Piotroski
+    if f_val is None and len(inc_list) >= 2 and len(bal_list) >= 2 and len(cf_list) >= 1:
+        try:
+            ps = 0
+            ni0 = float(get_first(inc_list[0], "netIncome") or 0)
+            ni1 = float(get_first(inc_list[1], "netIncome") or 0)
+            ta0 = float(get_first(bal_list[0], "totalAssets") or 1)
+            ta1 = float(get_first(bal_list[1], "totalAssets") or 1)
+            cfo = float(get_first(cf_list[0], "operatingCashFlow", "netCashProvidedByOperatingActivities") or 0)
+            roa0, roa1 = ni0/ta0 if ta0>0 else 0, ni1/ta1 if ta1>0 else 0
+            if roa0 > 0: ps += 1
+            if cfo > 0: ps += 1
+            if roa0 > roa1: ps += 1
+            if cfo > ni0: ps += 1
+            gpr0 = float(get_first(inc_list[0], "grossProfitRatio") or 0)
+            gpr1 = float(get_first(inc_list[1], "grossProfitRatio") or 0)
+            if gpr0 > gpr1: ps += 1
+            ltd0 = float(get_first(bal_list[0], "totalDebt", "longTermDebt") or 0)
+            ltd1 = float(get_first(bal_list[1], "totalDebt", "longTermDebt") or 0)
+            if ltd0 < ltd1: ps += 1
+            cr_v = get_first(r_ttm, "currentRatioTTM", "currentRatio")
+            if cr_v and float(cr_v) > 1.0: ps += 1
+            rev0 = float(get_first(inc_list[0], "revenue") or 0)
+            rev1 = float(get_first(inc_list[1], "revenue") or 0)
+            if ta0 > 0 and ta1 > 0 and (rev0/ta0) > (rev1/ta1): ps += 1
+            f_val = ps
+        except Exception:
+            pass
+    f_str = str(int(float(f_val))) if f_val is not None else "N/A"
+    lines.append(f"fScore: {f_str}")
 
-    # 8-11. Forward Valuation Metrics
-    current_price = profile_data.get("price") if profile_data else None
-    current_ev_val = ev_data[0].get("enterpriseValue") if ev_data else None
-    fwd_eps = estimates[0].get("estimatedEpsAvg") if estimates else None
-    fwd_rev = estimates[0].get("estimatedRevenueAvg") if estimates else None
-    fwd_ebitda = estimates[0].get("estimatedEbitdaAvg") if estimates else None
+    # ── 8-11. Forward Valuation Metrics ──
+    current_price = get_first(prof, "price", "stockPrice") if prof else None
+    current_ev_val = get_first(ev_d, "enterpriseValue", "enterprise_value", "ev") if ev_d else None
+    if current_ev_val is None:
+        current_ev_val = get_first(km_ttm, "enterpriseValueTTM", "enterpriseValue", "evTTM")
+
+    fwd_eps = get_first(est_d, "estimatedEpsAvg", "estimatedEps", "epsAvg", "eps") if est_d else None
+    fwd_rev = get_first(est_d, "estimatedRevenueAvg", "estimatedRevenue", "revenueAvg", "revenue") if est_d else None
+    fwd_ebitda = get_first(est_d, "estimatedEbitdaAvg", "estimatedEbitda", "ebitdaAvg", "ebitda") if est_d else None
+
+    lines.append(f"[DEBUG_FWD] price={current_price} ev={current_ev_val} fwd_eps={fwd_eps} fwd_rev={fwd_rev} fwd_ebitda={fwd_ebitda}")
 
     # Forward P/E
     fwd_pe_str = "N/A"
@@ -766,11 +889,11 @@ def format_fmp_for_analysis(ticker, data):
     # Forward PEG (Revenue-based)
     fwd_peg_str = "N/A"
     try:
-        if fwd_pe_val and income_data and fwd_rev and float(fwd_rev) > 0:
-            last_rev = income_data[0].get('revenue', 0)
-            if last_rev and float(last_rev) > 0:
-                rev_growth = (float(fwd_rev) - float(last_rev)) / float(last_rev)
-                if rev_growth > 0:
+        if fwd_pe_val and inc_d and fwd_rev and float(fwd_rev) > 0:
+            last_rev = float(get_first(inc_d, "revenue") or 0)
+            if last_rev > 0:
+                rev_growth = (float(fwd_rev) - last_rev) / last_rev
+                if rev_growth > 0.001:
                     fwd_peg = fwd_pe_val / (rev_growth * 100)
                     fwd_peg_str = f"{fwd_peg:.2f}x"
     except Exception:
@@ -790,11 +913,11 @@ def format_fmp_for_analysis(ticker, data):
     # Forward EV/FCF
     fwd_evfcf_str = "N/A"
     try:
-        if current_ev_val and fwd_ebitda and float(fwd_ebitda) > 0 and cashflow_data and income_data:
-            hist_fcf = cashflow_data[0].get('freeCashFlow', 0)
-            hist_ebitda = income_data[0].get('ebitda', 0) or income_data[0].get('operatingIncome', 0)
-            if hist_ebitda and float(hist_ebitda) > 0 and hist_fcf:
-                ratio = float(hist_fcf) / float(hist_ebitda)
+        if current_ev_val and fwd_ebitda and float(fwd_ebitda) > 0 and cf_d and inc_d:
+            hist_fcf = float(get_first(cf_d, "freeCashFlow", "fcf") or 0)
+            hist_ebitda = float(get_first(inc_d, "ebitda", "operatingIncome") or 0)
+            if hist_ebitda > 0 and hist_fcf > 0:
+                ratio = hist_fcf / hist_ebitda
                 est_fcf = float(fwd_ebitda) * ratio
                 if est_fcf > 0:
                     fwd_evfcf = float(current_ev_val) / est_fcf
@@ -803,17 +926,20 @@ def format_fmp_for_analysis(ticker, data):
         pass
     lines.append(f"forwardEVFCF: {fwd_evfcf_str}")
 
-    # 12-13. DCF & Margin of Safety
+    # ── 12-13. DCF & Margin of Safety ──
     dcf_val_str = "N/A"
     mos_str = "N/A"
-    if dcf:
-        dcf_v = dcf.get("dcf")
-        price_v = dcf.get("Stock Price") or (current_price if current_price else None)
+    if dcf_d:
+        dcf_v = get_first(dcf_d, "dcf", "intrinsicValue", "value")
+        price_v = get_first(dcf_d, "Stock Price", "stockPrice", "price") or current_price
         if dcf_v is not None:
-            dcf_val_str = f"${float(dcf_v):.2f}"
-            if price_v and float(dcf_v) > 0:
-                mos = (float(dcf_v) - float(price_v)) / float(dcf_v)
-                mos_str = f"{mos*100:.1f}%"
+            try:
+                dcf_val_str = f"${float(dcf_v):.2f}"
+                if price_v and float(dcf_v) > 0:
+                    mos = (float(dcf_v) - float(price_v)) / float(dcf_v)
+                    mos_str = f"{mos*100:.1f}%"
+            except Exception:
+                dcf_val_str = str(dcf_v)
     lines.append(f"dcfIntrinsicValue: {dcf_val_str}")
     lines.append(f"marginOfSafety: {mos_str}")
     lines.append(f"{'='*60}")
