@@ -236,56 +236,120 @@ def fmt_num(val, decimals=2):
 #  FMP DATA FETCHER
 # ──────────────────────────────────────────────────────────────
 def fetch_fmp_data(ticker):
-    """Fetch all required financial data from Financial Modeling Prep API."""
-    api_key = st.secrets["FMP_API_KEY"]
-    base = "https://financialmodelingprep.com/api/v3"
-    v4 = "https://financialmodelingprep.com/api/v4"
+    """Fetch all required financial data from Financial Modeling Prep API.
+    Tries the new 'stable' endpoints first, falls back to legacy v3/v4 if needed."""
+    api_key = st.secrets["FMP_API_KEY"].strip().strip('"').strip("'")
     ticker = ticker.strip().upper()
 
-    endpoints = {
-        "profile": f"{base}/profile/{ticker}?apikey={api_key}",
-        "ratios_ttm": f"{base}/ratios-ttm/{ticker}?apikey={api_key}",
-        "ratios_annual": f"{base}/ratios/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "income": f"{base}/income-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "balance": f"{base}/balance-sheet-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "cashflow": f"{base}/cash-flow-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "key_metrics_ttm": f"{base}/key-metrics-ttm/{ticker}?apikey={api_key}",
-        "key_metrics_annual": f"{base}/key-metrics/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "dcf": f"{base}/discounted-cash-flow/{ticker}?apikey={api_key}",
-        "ev": f"{base}/enterprise-values/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "growth": f"{base}/financial-growth/{ticker}?period=annual&limit=5&apikey={api_key}",
-        "analyst_estimates": f"{base}/analyst-estimates/{ticker}?period=annual&limit=3&apikey={api_key}",
-        "price_target": f"{v4}/price-target-consensus?symbol={ticker}&apikey={api_key}",
-        "score": f"{v4}/score?symbol={ticker}&apikey={api_key}",
+    # New stable endpoints (current FMP standard)
+    stable = "https://financialmodelingprep.com/stable"
+    # Legacy endpoints (for older accounts)
+    v3 = "https://financialmodelingprep.com/api/v3"
+    v4 = "https://financialmodelingprep.com/api/v4"
+
+    # Try stable format first, fallback to legacy
+    endpoint_pairs = {
+        "profile": (
+            f"{stable}/profile?symbol={ticker}&apikey={api_key}",
+            f"{v3}/profile/{ticker}?apikey={api_key}",
+        ),
+        "ratios_ttm": (
+            f"{stable}/ratios-ttm?symbol={ticker}&apikey={api_key}",
+            f"{v3}/ratios-ttm/{ticker}?apikey={api_key}",
+        ),
+        "ratios_annual": (
+            f"{stable}/ratios?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/ratios/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "income": (
+            f"{stable}/income-statement?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/income-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "balance": (
+            f"{stable}/balance-sheet-statement?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/balance-sheet-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "cashflow": (
+            f"{stable}/cash-flow-statement?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/cash-flow-statement/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "key_metrics_ttm": (
+            f"{stable}/key-metrics-ttm?symbol={ticker}&apikey={api_key}",
+            f"{v3}/key-metrics-ttm/{ticker}?apikey={api_key}",
+        ),
+        "key_metrics_annual": (
+            f"{stable}/key-metrics?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/key-metrics/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "dcf": (
+            f"{stable}/discounted-cash-flow?symbol={ticker}&apikey={api_key}",
+            f"{v3}/discounted-cash-flow/{ticker}?apikey={api_key}",
+        ),
+        "ev": (
+            f"{stable}/enterprise-values?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/enterprise-values/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "growth": (
+            f"{stable}/financial-growth?symbol={ticker}&period=annual&limit=5&apikey={api_key}",
+            f"{v3}/financial-growth/{ticker}?period=annual&limit=5&apikey={api_key}",
+        ),
+        "analyst_estimates": (
+            f"{stable}/analyst-estimates?symbol={ticker}&period=annual&limit=3&apikey={api_key}",
+            f"{v3}/analyst-estimates/{ticker}?period=annual&limit=3&apikey={api_key}",
+        ),
+        "score": (
+            f"{stable}/rating?symbol={ticker}&apikey={api_key}",
+            f"{v4}/score?symbol={ticker}&apikey={api_key}",
+        ),
+        "price_target": (
+            f"{stable}/price-target-consensus?symbol={ticker}&apikey={api_key}",
+            f"{v4}/price-target-consensus?symbol={ticker}&apikey={api_key}",
+        ),
     }
 
     data = {}
-    diagnostics = {"success": [], "failed": []}
+    diagnostics = {"success": [], "failed": [], "errors": []}
 
-    for name, url in endpoints.items():
-        try:
-            resp = requests.get(url, timeout=12)
-            if resp.status_code == 200:
-                result = resp.json()
-                # FMP returns error dicts like {"Error Message": "..."}
-                if isinstance(result, dict) and ("Error Message" in result or "error" in result):
-                    data[name] = None
-                    diagnostics["failed"].append(name)
-                elif isinstance(result, list) and len(result) > 0:
-                    data[name] = result
-                    diagnostics["success"].append(name)
-                elif isinstance(result, dict) and len(result) > 0:
-                    data[name] = result
-                    diagnostics["success"].append(name)
-                else:
-                    data[name] = None
-                    diagnostics["failed"].append(name)
-            else:
-                data[name] = None
-                diagnostics["failed"].append(f"{name}({resp.status_code})")
-        except Exception as e:
+    def is_valid_response(result):
+        """Check if FMP response contains actual data."""
+        if result is None:
+            return False
+        if isinstance(result, dict):
+            if "Error Message" in result or "error" in result:
+                return False
+            return len(result) > 0
+        if isinstance(result, list):
+            return len(result) > 0
+        return False
+
+    for name, (stable_url, fallback_url) in endpoint_pairs.items():
+        fetched = False
+        for url in [stable_url, fallback_url]:
+            try:
+                resp = requests.get(url, timeout=12)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if is_valid_response(result):
+                        data[name] = result if isinstance(result, list) else [result] if isinstance(result, dict) else result
+                        diagnostics["success"].append(name)
+                        fetched = True
+                        break
+                    else:
+                        # Capture the actual error for diagnostics
+                        if isinstance(result, dict) and "Error Message" in result:
+                            diagnostics["errors"].append(f"{name}: {result['Error Message'][:80]}")
+                elif resp.status_code == 401:
+                    diagnostics["errors"].append(f"{name}: 401 Unauthorized")
+                elif resp.status_code == 403:
+                    diagnostics["errors"].append(f"{name}: 403 Forbidden (plan limit)")
+            except requests.exceptions.Timeout:
+                diagnostics["errors"].append(f"{name}: timeout")
+            except Exception as e:
+                diagnostics["errors"].append(f"{name}: {str(e)[:50]}")
+
+        if not fetched:
             data[name] = None
-            diagnostics["failed"].append(f"{name}(err)")
+            diagnostics["failed"].append(name)
 
     data["_diagnostics"] = diagnostics
     return data
@@ -668,11 +732,31 @@ with tab_ticker:
         st.markdown("<br>", unsafe_allow_html=True)
         fetch_clicked = st.button("⚡ FETCH DATA", key="fetch_btn", disabled=not ticker_input)
 
+    # Debug: API connection test
+    with st.expander("🔧 Test FMP API Connection", expanded=False):
+        if st.button("Run Connection Test", key="test_api"):
+            try:
+                api_key = st.secrets["FMP_API_KEY"].strip().strip('"').strip("'")
+                masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
+                st.code(f"Key (masked): {masked}\nKey length: {len(api_key)} chars")
+
+                # Test stable endpoint
+                url1 = f"https://financialmodelingprep.com/stable/profile?symbol=AAPL&apikey={api_key}"
+                r1 = requests.get(url1, timeout=10)
+                st.code(f"Stable endpoint: HTTP {r1.status_code}\nResponse: {r1.text[:300]}")
+
+                # Test v3 endpoint
+                url2 = f"https://financialmodelingprep.com/api/v3/profile/AAPL?apikey={api_key}"
+                r2 = requests.get(url2, timeout=10)
+                st.code(f"Legacy v3 endpoint: HTTP {r2.status_code}\nResponse: {r2.text[:300]}")
+            except Exception as e:
+                st.error(f"Test failed: {str(e)}")
+
     if fetch_clicked and ticker_input:
         with st.spinner(f"Fetching data for {ticker_input.upper()} from FMP..."):
             try:
                 fmp_raw = fetch_fmp_data(ticker_input)
-                diag = fmp_raw.pop("_diagnostics", {"success": [], "failed": []})
+                diag = fmp_raw.pop("_diagnostics", {"success": [], "failed": [], "errors": []})
                 formatted = format_fmp_for_analysis(ticker_input.upper(), fmp_raw)
                 st.session_state.fmp_data_preview = formatted
                 st.session_state.fmp_diagnostics = diag
@@ -685,11 +769,19 @@ with tab_ticker:
         diag = st.session_state.get("fmp_diagnostics", {})
         success_count = len(diag.get("success", []))
         failed_list = diag.get("failed", [])
+        error_list = diag.get("errors", [])
 
         if success_count == 0:
-            st.error("⚠ No data returned from FMP. Please verify your FMP_API_KEY is correct in Streamlit secrets (Settings → Secrets). It should be: FMP_API_KEY = \"your-key-here\"")
+            st.error("⚠ No data returned from FMP.")
+            if error_list:
+                st.warning("**FMP API errors:**\n" + "\n".join([f"- `{e}`" for e in error_list[:5]]))
+            else:
+                st.warning("No specific error messages captured. Please verify:\n"
+                           "1. Your `FMP_API_KEY` in Streamlit secrets has no extra quotes or spaces\n"
+                           "2. Your FMP plan is active (check dashboard at site.financialmodelingprep.com)\n"
+                           "3. You haven't exceeded daily request limits (free plan = 250/day)")
         elif failed_list:
-            st.markdown(f'<span style="font-size:10px;color:#ffd54f;font-family:JetBrains Mono,monospace;">⚠ {len(failed_list)} endpoint(s) unavailable: {", ".join(failed_list)} — may require paid FMP plan</span>', unsafe_allow_html=True)
+            st.markdown(f'<span style="font-size:10px;color:#ffd54f;font-family:JetBrains Mono,monospace;">⚠ {len(failed_list)} endpoint(s) unavailable: {", ".join(failed_list)}</span>', unsafe_allow_html=True)
 
         with st.expander(f"📊 Fetched Data Preview — {success_count} endpoints loaded (click to expand)", expanded=False):
             st.code(st.session_state.fmp_data_preview, language="text")
