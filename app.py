@@ -87,8 +87,8 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
     .stApp { background-color: #0d1117; }
-    header[data-testid="stHeader"] { background-color: #0d1117; }
-    .block-container { max-width: 960px; padding-top: 1rem; }
+    header[data-testid="stHeader"] { background-color: #0d1117; visibility: hidden; height: 0px; }
+    .block-container { max-width: 960px; padding-top: 2.5rem; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display: none;}
@@ -646,6 +646,7 @@ with tab_ticker:
                 fmp_raw = fetch_fmp_data(ticker_input)
                 formatted = format_fmp_for_analysis(ticker_input.upper(), fmp_raw)
                 st.session_state.fmp_data_preview = formatted
+                st.rerun()
             except Exception as e:
                 st.error(f"FMP fetch failed: {str(e)}")
 
@@ -794,7 +795,7 @@ if result:
                 <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2px;color:#718096;">KEY METRICS</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">{chips}</div>
-        </div>""", height=200)
+        </div>""", height=280)
 
     # ── Analyst Notes ──
     notes = result.get("analystNotes", {})
@@ -832,7 +833,7 @@ if result:
             <div style="background:#0d1117;border-radius:8px;padding:16px;border:1px solid #2d3748;border-left:3px solid {rec_color};">
                 <p style="color:#cbd5e0;font-size:13px;line-height:1.75;font-family:'Segoe UI',system-ui,sans-serif;margin:0;">{memo}</p>
             </div>
-        </div>""", height=180)
+        </div>""", height=300)
 
 
 # ──────────────────────────────────────────────────────────────
