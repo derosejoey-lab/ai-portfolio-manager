@@ -70,7 +70,9 @@ You MUST respond with ONLY this JSON structure:
     "forwardPE": "<value or N/A>",
     "forwardPEG": "<value or N/A>",
     "forwardEVSales": "<value or N/A>",
-    "forwardEVFCF": "<value or N/A>"
+    "forwardEVFCF": "<value or N/A>",
+    "dcfIntrinsicValue": "<value or N/A>",
+    "marginOfSafety": "<percentage or N/A>"
   },
   "analystNotes": {
     "fundamental": "One sentence summary of fundamental findings.",
@@ -149,6 +151,8 @@ if "result" not in st.session_state:
     st.session_state.result = None
 if "fmp_data_preview" not in st.session_state:
     st.session_state.fmp_data_preview = None
+if "fmp_diagnostics" not in st.session_state:
+    st.session_state.fmp_diagnostics = {}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -235,6 +239,7 @@ def fetch_fmp_data(ticker):
     """Fetch all required financial data from Financial Modeling Prep API."""
     api_key = st.secrets["FMP_API_KEY"]
     base = "https://financialmodelingprep.com/api/v3"
+    v4 = "https://financialmodelingprep.com/api/v4"
     ticker = ticker.strip().upper()
 
     endpoints = {
@@ -247,31 +252,42 @@ def fetch_fmp_data(ticker):
         "key_metrics_ttm": f"{base}/key-metrics-ttm/{ticker}?apikey={api_key}",
         "key_metrics_annual": f"{base}/key-metrics/{ticker}?period=annual&limit=5&apikey={api_key}",
         "dcf": f"{base}/discounted-cash-flow/{ticker}?apikey={api_key}",
-        "score": f"{base}/score?symbol={ticker}&apikey={api_key}",
         "ev": f"{base}/enterprise-values/{ticker}?period=annual&limit=5&apikey={api_key}",
         "growth": f"{base}/financial-growth/{ticker}?period=annual&limit=5&apikey={api_key}",
         "analyst_estimates": f"{base}/analyst-estimates/{ticker}?period=annual&limit=3&apikey={api_key}",
-        "price_target": f"{base}/price-target-consensus/{ticker}?apikey={api_key}",
+        "price_target": f"{v4}/price-target-consensus?symbol={ticker}&apikey={api_key}",
+        "score": f"{v4}/score?symbol={ticker}&apikey={api_key}",
     }
 
     data = {}
+    diagnostics = {"success": [], "failed": []}
+
     for name, url in endpoints.items():
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=12)
             if resp.status_code == 200:
                 result = resp.json()
-                # FMP returns lists for most endpoints, single items for others
-                if isinstance(result, list) and len(result) > 0:
+                # FMP returns error dicts like {"Error Message": "..."}
+                if isinstance(result, dict) and ("Error Message" in result or "error" in result):
+                    data[name] = None
+                    diagnostics["failed"].append(name)
+                elif isinstance(result, list) and len(result) > 0:
                     data[name] = result
-                elif isinstance(result, dict):
+                    diagnostics["success"].append(name)
+                elif isinstance(result, dict) and len(result) > 0:
                     data[name] = result
+                    diagnostics["success"].append(name)
                 else:
                     data[name] = None
+                    diagnostics["failed"].append(name)
             else:
                 data[name] = None
-        except Exception:
+                diagnostics["failed"].append(f"{name}({resp.status_code})")
+        except Exception as e:
             data[name] = None
+            diagnostics["failed"].append(f"{name}(err)")
 
+    data["_diagnostics"] = diagnostics
     return data
 
 
@@ -533,7 +549,13 @@ def format_fmp_for_analysis(ticker, data):
             lines.append(f"Forward EV/FCF: N/A")
 
     # ── Price Target Consensus ──
-    pt = data.get("price_target", [None])[0] if data.get("price_target") else None
+    pt = None
+    raw_pt = data.get("price_target")
+    if raw_pt:
+        if isinstance(raw_pt, list) and len(raw_pt) > 0:
+            pt = raw_pt[0]
+        elif isinstance(raw_pt, dict) and "Error Message" not in raw_pt:
+            pt = raw_pt
     if pt:
         lines.append(f"\n=== ANALYST PRICE TARGET CONSENSUS ===")
         lines.append(f"Target High: ${safe_get(pt, 'targetHigh')}")
@@ -542,7 +564,13 @@ def format_fmp_for_analysis(ticker, data):
         lines.append(f"Target Median: ${safe_get(pt, 'targetMedian')}")
 
     # ── Altman Z-Score & Piotroski F-Score ──
-    score_data = data.get("score", [None])[0] if data.get("score") else None
+    score_data = None
+    raw_score = data.get("score")
+    if raw_score:
+        if isinstance(raw_score, list) and len(raw_score) > 0:
+            score_data = raw_score[0]
+        elif isinstance(raw_score, dict):
+            score_data = raw_score
     if score_data:
         lines.append(f"\n=== FORENSIC / QUALITY SCORES ===")
         lines.append(f"Altman Z-Score: {safe_get(score_data, 'altmanZScore')}")
@@ -644,20 +672,32 @@ with tab_ticker:
         with st.spinner(f"Fetching data for {ticker_input.upper()} from FMP..."):
             try:
                 fmp_raw = fetch_fmp_data(ticker_input)
+                diag = fmp_raw.pop("_diagnostics", {"success": [], "failed": []})
                 formatted = format_fmp_for_analysis(ticker_input.upper(), fmp_raw)
                 st.session_state.fmp_data_preview = formatted
+                st.session_state.fmp_diagnostics = diag
                 st.rerun()
             except Exception as e:
                 st.error(f"FMP fetch failed: {str(e)}")
 
     if st.session_state.fmp_data_preview:
-        with st.expander("📊 Fetched Data Preview (click to expand)", expanded=False):
+        # Show diagnostics
+        diag = st.session_state.get("fmp_diagnostics", {})
+        success_count = len(diag.get("success", []))
+        failed_list = diag.get("failed", [])
+
+        if success_count == 0:
+            st.error("⚠ No data returned from FMP. Please verify your FMP_API_KEY is correct in Streamlit secrets (Settings → Secrets). It should be: FMP_API_KEY = \"your-key-here\"")
+        elif failed_list:
+            st.markdown(f'<span style="font-size:10px;color:#ffd54f;font-family:JetBrains Mono,monospace;">⚠ {len(failed_list)} endpoint(s) unavailable: {", ".join(failed_list)} — may require paid FMP plan</span>', unsafe_allow_html=True)
+
+        with st.expander(f"📊 Fetched Data Preview — {success_count} endpoints loaded (click to expand)", expanded=False):
             st.code(st.session_state.fmp_data_preview, language="text")
 
         col_info2, col_run = st.columns([3, 1])
         with col_info2:
-            line_count = st.session_state.fmp_data_preview.count('\n')
-            st.markdown(f'<span style="font-size:10px;color:#00e676;font-family:JetBrains Mono,monospace;">✓ {line_count} data points loaded</span>', unsafe_allow_html=True)
+            line_count = len([l for l in st.session_state.fmp_data_preview.split('\n') if l.strip() and not l.startswith('===')])
+            st.markdown(f'<span style="font-size:10px;color:#00e676;font-family:JetBrains Mono,monospace;">✓ {line_count} data points loaded from {success_count} endpoints</span>', unsafe_allow_html=True)
         with col_run:
             if st.button("▶ RUN ANALYSIS", key="run_ticker"):
                 analysis_text = st.session_state.fmp_data_preview
@@ -786,7 +826,8 @@ if result:
             ("M-SCORE", km.get("mScore","N/A")), ("Z-SCORE", km.get("zScore","N/A")),
             ("F-SCORE", km.get("fScore","N/A")), ("MOAT TYPE", km.get("moatType","N/A")),
             ("FWD P/E", km.get("forwardPE","N/A")), ("FWD PEG", km.get("forwardPEG","N/A")),
-            ("FWD EV/S", km.get("forwardEVSales","N/A")), ("FWD EV/FCF", km.get("forwardEVFCF","N/A"))]
+            ("FWD EV/S", km.get("forwardEVSales","N/A")), ("FWD EV/FCF", km.get("forwardEVFCF","N/A")),
+            ("DCF VALUE", km.get("dcfIntrinsicValue","N/A")), ("MARGIN/SAFETY", km.get("marginOfSafety","N/A"))]
         chips = "".join([f'<div style="background:#1a202c;border:1px solid #2d3748;border-radius:6px;padding:6px 10px;"><div style="font-family:\'JetBrains Mono\',monospace;font-size:9px;letter-spacing:1px;color:#718096;text-transform:uppercase;">{l}</div><div style="font-family:\'JetBrains Mono\',monospace;font-size:13px;font-weight:600;color:#e2e8f0;">{v}</div></div>' for l,v in metrics])
         render_html(f"""
         <div style="background:#161b22;border:1px solid #1e2a3a;border-radius:10px;padding:20px;">
@@ -795,7 +836,7 @@ if result:
                 <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2px;color:#718096;">KEY METRICS</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">{chips}</div>
-        </div>""", height=280)
+        </div>""", height=320)
 
     # ── Analyst Notes ──
     notes = result.get("analystNotes", {})
@@ -819,7 +860,7 @@ if result:
                 <span style="font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1px;padding:3px 8px;border-radius:4px;white-space:nowrap;background:#ffd54f11;color:#ffd54f;border:1px solid #ffd54f33;">VALUATION</span>
                 <span style="color:#a0aec0;font-size:12px;line-height:1.5;">{vn}</span>
             </div>
-        </div>""", height=200)
+        </div>""", height=260)
 
     # ── Investment Memo ──
     memo = result.get("memo", "")
